@@ -19,3 +19,5 @@ cmake -B build && cmake --build build
 ```
 
 无论哪种命令，你都可以在 build/ 下找到 cminusfc 等可执行文件
+
+git push try
