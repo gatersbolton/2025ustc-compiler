@@ -112,5 +112,8 @@ class CminusfBuilder : public ASTVisitor {
         Function *func = nullptr;
         // detect scope pre-enter (for elegance only)
         bool pre_enter_scope = false;
+        BasicBlock *now_bb = nullptr;
+        std::vector<Type *> param_type;
+        std::string label = "";
     } context;
 };
