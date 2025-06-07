@@ -34,23 +34,29 @@ bool DeadCode::clear_basic_blocks(Function *func) {
     return changed;
 }
 
-void DeadCode::mark(Function *func) {
-    work_list.clear();
+void DeadCode::mark(Function *function) {
     marked.clear();
-    for (auto &bb : func->get_basic_blocks()) {
-        for (auto &instr : bb.get_instructions()) {
-            if (is_critical(&instr)) {
-                marked[&instr] = true;
-                work_list.push_back(&instr);
+    work_list.clear();
+
+    // 初始标记关键指令并加入工作队列
+    for (auto &block : function->get_basic_blocks()) {
+        auto &instructions = block.get_instructions();
+        for (auto &inst : instructions) {
+            if (is_critical(&inst)) {
+                marked.emplace(&inst, true);
+                work_list.emplace_back(&inst);
             }
         }
     }
+
+    // 使用工作队列传播标记
     while (!work_list.empty()) {
-        auto *curr = work_list.front();
+        Instruction *currentInst = work_list.front();
         work_list.pop_front();
-        mark(curr);
+        mark(currentInst);
     }
 }
+
 
 void DeadCode::mark(Instruction *ins) {
     for (auto *op : ins->get_operands()) {
@@ -67,14 +73,27 @@ void DeadCode::mark(Instruction *ins) {
 }
 
 bool DeadCode::is_critical(Instruction *ins) {
-    if (ins->is_ret() || ins->is_br() || ins->is_store() || ins->is_phi()) {
+    const bool isExitOrControl = ins->is_ret() || ins->is_br();
+    const bool isMemWriteOrPhi = ins->is_store() || ins->is_phi();
+    
+    if (isExitOrControl || isMemWriteOrPhi) {
         return true;
     }
+    
     if (ins->is_call()) {
-        auto *callee = dynamic_cast<Function *>(ins->get_operand(0));
-        return !callee || !func_info->is_pure_function(callee);
+        Value *callTarget = ins->get_operand(0);
+        Function *callee = dynamic_cast<Function *>(callTarget);
+        
+        if (!callee) {
+            return true;
+        }
+        
+        bool hasSideEffects = !func_info->is_pure_function(callee);
+        return hasSideEffects;
     }
-    return !ins->get_use_list().empty();
+    
+    const bool isReferenced = ins->get_use_list().size() > 0;
+    return isReferenced;
 }
 
 bool DeadCode::sweep(Function *func) {
