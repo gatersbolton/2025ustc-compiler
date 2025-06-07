@@ -3,14 +3,13 @@
 #include <vector>
 #include <unordered_set>
 
-// 处理流程：两趟处理，mark 标记有用变量，sweep 删除无用指令
 void DeadCode::run() {
     bool changed = false;
     func_info->run();
     do {
         changed = false;
-        for (auto &f : m_->get_functions()) {
-            auto *func = &f;
+        for (auto &F : m_->get_functions()) {
+            auto *func = &F;
             changed |= clear_basic_blocks(func);
             mark(func);
             changed |= sweep(func);
@@ -21,23 +20,23 @@ void DeadCode::run() {
 }
 
 bool DeadCode::clear_basic_blocks(Function *func) {
-    bool modified = false;
-    std::vector<BasicBlock *> blocks_to_remove;
+    bool changed = false;
+    std::vector<BasicBlock *> to_erase;
     for (auto &bb : func->get_basic_blocks()) {
         if (bb.get_pre_basic_blocks().empty() && &bb != func->get_entry_block()) {
-            blocks_to_remove.push_back(&bb);
-            modified = true;
+            to_erase.push_back(&bb);
+            changed = true;
         }
     }
-    for (auto *bb : blocks_to_remove) {
-        bb->erase_from_parent(); // 不需要手动 delete，内部已处理
+    for (auto *bb : to_erase) {
+        bb->erase_from_parent();
     }
-    return modified;
+    return changed;
 }
 
 void DeadCode::mark(Function *func) {
-    marked.clear();
     work_list.clear();
+    marked.clear();
     for (auto &bb : func->get_basic_blocks()) {
         for (auto &instr : bb.get_instructions()) {
             if (is_critical(&instr)) {
@@ -54,8 +53,8 @@ void DeadCode::mark(Function *func) {
 }
 
 void DeadCode::mark(Instruction *ins) {
-    for (auto *operand : ins->get_operands()) {
-        auto *def = dynamic_cast<Instruction *>(operand);
+    for (auto *op : ins->get_operands()) {
+        auto *def = dynamic_cast<Instruction *>(op);
         if (!def)
             continue;
         if (def->get_function() != ins->get_function())
@@ -73,52 +72,65 @@ bool DeadCode::is_critical(Instruction *ins) {
     }
     if (ins->is_call()) {
         auto *callee = dynamic_cast<Function *>(ins->get_operand(0));
-        // 如果调用的函数不是纯函数，不能删
         return !callee || !func_info->is_pure_function(callee);
     }
-    // 被其他指令使用的，也不能删
     return !ins->get_use_list().empty();
 }
+
 bool DeadCode::sweep(Function *func) {
-    std::unordered_set<Instruction *> to_remove;
-    for (auto &bb : func->get_basic_blocks()) {
-        for (auto &ins : bb.get_instructions()) {
-            if (!marked.count(&ins)) {
-                to_remove.insert(&ins);
+    std::vector<Instruction *> instructionsToDelete;
+
+    for (auto &basicBlock : func->get_basic_blocks()) {
+        for (auto &instruction : basicBlock.get_instructions()) {
+            if (marked.find(&instruction) == marked.end()) {
+                instructionsToDelete.push_back(&instruction);
             }
         }
     }
-    for (auto *ins : to_remove) {
-        // 移除所有操作数引用
-        for (size_t i = 0; i < ins->get_num_operand(); ++i) {
-            Value *op = ins->get_operand(i);
-            if (op) {
-                op->remove_use(ins, i);
+
+    for (auto *instr : instructionsToDelete) {
+        size_t operandCount = instr->get_num_operand();
+        for (size_t idx = 0; idx < operandCount; ++idx) {
+            if (auto *operand = instr->get_operand(idx)) {
+                operand->remove_use(instr, idx);
             }
         }
-        ins->get_parent()->remove_instr(ins);
+
+        auto *parentBlock = instr->get_parent();
+        if (parentBlock) {
+            parentBlock->remove_instr(instr);
+        }
+
         ++ins_count;
     }
-    return !to_remove.empty();
+
+    return !instructionsToDelete.empty();
 }
 
+
 void DeadCode::sweep_globally() {
-    std::vector<Function *> unused_funcs;
-    std::vector<GlobalVariable *> unused_globals;
-    for (auto &f : m_->get_functions()) {
-        if (f.get_name() != "main" && f.get_use_list().empty()) {
-            unused_funcs.push_back(&f);
+    std::vector<Function *> funcs_to_remove;
+    std::vector<GlobalVariable *> globals_to_remove;
+
+    for (auto it = m_->get_functions().rbegin(); it != m_->get_functions().rend(); ++it) {
+        if (it->get_name() != "main" && it->get_use_list().size() == 0) {
+            funcs_to_remove.push_back(&*it);
         }
     }
-    for (auto &g : m_->get_global_variable()) {
-        if (g.get_use_list().empty()) {
-            unused_globals.push_back(&g);
-        }
+
+    auto& globals = m_->get_global_variable();
+    for (int idx = 0; idx < globals.size(); ++idx) {
+        auto it = globals.begin();
+        std::advance(it, idx);
+        if (!it->get_use_list().empty()) continue;
+        globals_to_remove.push_back(&*it);
     }
-    for (auto *f : unused_funcs) {
-        m_->get_functions().erase(f->getIterator());
+
+    for (auto rit = globals_to_remove.rbegin(); rit != globals_to_remove.rend(); ++rit) {
+        if (*rit) globals.erase((*rit)->getIterator());
     }
-    for (auto *g : unused_globals) {
-        m_->get_global_variable().erase(g->getIterator());
+
+    for (Function* func_ptr : funcs_to_remove) {
+        if (func_ptr) m_->get_functions().erase(func_ptr->getIterator());
     }
 }
